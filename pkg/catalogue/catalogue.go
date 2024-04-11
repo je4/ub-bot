@@ -1,12 +1,14 @@
 package catalogue
 
 import (
+	"bytes"
 	"context"
 	"emperror.dev/errors"
 	"fmt"
 	"github.com/bwmarrin/discordgo"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/je4/ub-bot/v2/data"
 	"github.com/je4/ub-bot/v2/pkg/discord"
 	"github.com/je4/ubcat/v2/pkg/index"
 	"github.com/je4/ubcat/v2/pkg/schema"
@@ -14,7 +16,9 @@ import (
 	"github.com/je4/utils/v2/pkg/zLogger"
 	oai "github.com/sashabaranov/go-openai"
 	"net/url"
+	"strconv"
 	"strings"
+	"text/template"
 )
 
 const (
@@ -39,6 +43,7 @@ func NewCatalogue(elastic *elasticsearch.TypedClient, elasticIndex string, badge
 		logger:   logger,
 		status:   cStatus{},
 		prefix:   prefix,
+		tmpl:     template.Must(template.New("embedding.gotmpl").Parse(data.TextTemplate)),
 	}
 	return cat
 }
@@ -49,6 +54,7 @@ type Catalog struct {
 	logger   zLogger.ZLogger
 	status   cStatus
 	prefix   string
+	tmpl     *template.Template
 }
 
 func (cat *Catalog) GetEmbedding(queryString string) (embedding []float32, resultErr error) {
@@ -67,6 +73,10 @@ func (cat *Catalog) Query2Embedding(queryString string) (string, error) {
 		return "", errors.Wrap(err, "cannot create embedding query")
 	}
 	return result, nil
+}
+
+func (cat *Catalog) GetDocuments(identifier ...string) (map[string]*schema.UBSchema, error) {
+	return cat.ubClient.GetDocuments(context.Background(), identifier...)
 }
 
 func (cat *Catalog) Search(queryString string, embedding []float32, searchType SearchType, from, num int64) (*index.Result, error) {
@@ -125,7 +135,7 @@ func (cat *Catalog) Result2MessageEmbed(result *index.Result, stat *channelStatu
 		stat.result = append(stat.result, entry)
 		embed := &discordgo.MessageEmbed{
 			Author: &discordgo.MessageEmbedAuthor{
-				Name: fmt.Sprintf("%d - %f", start+key, entry.Score_),
+				Name: fmt.Sprintf("%d - %f - %s", start+key, entry.Score_, entry.Id_),
 			},
 			Title:  entry.GetMainTitle(),
 			Fields: []*discordgo.MessageEmbedField{},
@@ -336,9 +346,9 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 				Required:    true,
 			},
 			{
-				Type:        discordgo.ApplicationCommandOptionInteger,
+				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "resultid",
-				Description: "Result ID from previous search",
+				Description: "Result ID from previous search or full elastic id",
 				Required:    true,
 			},
 		},
@@ -352,23 +362,66 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 			return
 		}
 		sType := data.Options[0].StringValue()
-		resultID := data.Options[1].IntValue()
-		stat := cat.status.Get(i.ChannelID)
-		if len(stat.result) == 0 {
-			if err := i.SendInteractionResponseMessage("No search results available"); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
-			}
-			return
-		}
-		if resultID < 0 || int(resultID) >= len(stat.result) {
-			if err := i.SendInteractionResponseMessage("Invalid result ID"); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
-			}
-			return
-		}
-		lastResult := stat.result[resultID]
+		resultIDStr := data.Options[1].StringValue()
+		resultID := -1
+		var err error
 		var searchType SearchType
 		var vector []float32
+		var lastResult *schema.UBSchema
+		stat := cat.status.Get(i.ChannelID)
+		if resultID, err = strconv.Atoi(resultIDStr); err == nil && resultID < 100 {
+			if len(stat.result) == 0 {
+				if err := i.SendInteractionResponseMessage("No search results available"); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if resultID < 0 || int(resultID) >= len(stat.result) {
+				if err := i.SendInteractionResponseMessage("Invalid result ID"); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			lastResult = stat.result[resultID]
+			stat.lastQuery = fmt.Sprintf("similar:%d - %s", resultID, lastResult.GetMainTitle())
+			cat.logger.Debug().Msgf("result ID: %d", resultID)
+		} else {
+			docs, err := cat.GetDocuments(resultIDStr)
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting document %s: %v", resultIDStr, err)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error getting document %s: %v", resultIDStr, err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if len(docs) != 1 {
+				cat.logger.Error().Msgf("Invalid document ID %s", resultIDStr)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Invalid document ID %s", resultIDStr)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			var ok bool
+			lastResult, ok = docs[resultIDStr]
+			if !ok {
+				cat.logger.Error().Msgf("Document %s not found", resultIDStr)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Document %s not found", resultIDStr)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			stat.lastQuery = fmt.Sprintf("similar:%s - %s", resultIDStr, lastResult.GetMainTitle())
+
+			cat.logger.Debug().Msgf("result ID: %s", resultIDStr)
+		}
+		if lastResult == nil {
+			cat.logger.Error().Msgf("No last result available")
+			if err := i.SendInteractionResponseMessage("No last result available"); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+
 		switch sType {
 		case "marc":
 			searchType = SearchTypeEmbeddingMARC
@@ -386,11 +439,10 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 			return
 		}
 		stat.result = []*schema.UBSchema{}
-		stat.lastQuery = fmt.Sprintf("similar:%d", resultID)
 		stat.lastSearchType = searchType
 		stat.lastVector = vector
 
-		cat.logger.Debug().Msgf("searching %s similatities for: %s", sType, lastResult.GetMainTitle())
+		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
 		result, err := cat.Search("", vector, searchType, 0, stat.config.maxResults)
 		if err != nil {
 			cat.logger.Error().Msgf("Error searching: %v", err)
@@ -453,6 +505,101 @@ func (cat *Catalog) CommandMagic() (cmdFunc discord.CommandCreate, appCmd *disco
 		}
 		cat.logger.Debug().Msgf("new query: %s", newQuery)
 		if err := i.SendInteractionResponseMessage(newQuery); err != nil {
+			cat.logger.Error().Msgf("Error sending response: %v", err)
+		}
+	}
+	return
+}
+
+func (cat *Catalog) CommandText() (cmdFunc discord.CommandCreate, appCmd *discordgo.ApplicationCommand) {
+	appCmd = &discordgo.ApplicationCommand{
+		Name:        cat.prefix + "text",
+		Description: "show base text of prose embedding",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "resultid",
+				Description: "Result ID from previous search or full elastic id",
+				Required:    true,
+			},
+		},
+	}
+	cmdFunc = func(i *discord.Interaction) {
+		data := i.ApplicationCommandData()
+		cat.logger.Debug().Msgf("command name: %s", data.Name)
+		if len(data.Options) < 1 {
+			if err := i.SendInteractionResponseMessage("Please provide query"); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+
+		resultIDStr := data.Options[0].StringValue()
+		resultID := -1
+		var err error
+		var lastResult *schema.UBSchema
+		stat := cat.status.Get(i.ChannelID)
+		if resultID, err = strconv.Atoi(resultIDStr); err == nil && resultID < 100 {
+			if len(stat.result) == 0 {
+				if err := i.SendInteractionResponseMessage("No search results available"); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if resultID < 0 || int(resultID) >= len(stat.result) {
+				if err := i.SendInteractionResponseMessage("Invalid result ID"); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			lastResult = stat.result[resultID]
+			stat.lastQuery = fmt.Sprintf("similar:%d - %s", resultID, lastResult.GetMainTitle())
+			cat.logger.Debug().Msgf("result ID: %d", resultID)
+		} else {
+			docs, err := cat.GetDocuments(resultIDStr)
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting document %s: %v", resultIDStr, err)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error getting document %s: %v", resultIDStr, err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if len(docs) != 1 {
+				cat.logger.Error().Msgf("Invalid document ID %s", resultIDStr)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Invalid document ID %s", resultIDStr)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			var ok bool
+			lastResult, ok = docs[resultIDStr]
+			if !ok {
+				cat.logger.Error().Msgf("Document %s not found", resultIDStr)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Document %s not found", resultIDStr)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+
+			cat.logger.Debug().Msgf("result ID: %s", resultIDStr)
+		}
+		if lastResult == nil {
+			cat.logger.Error().Msgf("No last result available")
+			if err := i.SendInteractionResponseMessage("No last result available"); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+
+		buf := bytes.NewBuffer(nil)
+		if err := cat.tmpl.Execute(buf, lastResult); err != nil {
+			cat.logger.Error().Msgf("Error executing template: %v", err)
+			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error executing template: %v", err)); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+		if err := i.SendInteractionResponseMessage(buf.String()); err != nil {
 			cat.logger.Error().Msgf("Error sending response: %v", err)
 		}
 	}
@@ -579,6 +726,11 @@ func (cat *Catalog) InitCommands(session *discord.Session) error {
 	cmdFunc, appCmd = cat.CommandMore()
 	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
 		return errors.Wrap(err, "cannot create more command")
+	}
+
+	cmdFunc, appCmd = cat.CommandText()
+	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
+		return errors.Wrap(err, "cannot create text command")
 	}
 	return nil
 }

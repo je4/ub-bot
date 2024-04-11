@@ -1,0 +1,139 @@
+{{- $data := . }}
+{{- $mapping := $data.Mapping }}
+
+Title: {{ $data.GetMainTitle }}
+{{- if ne $data.GetAlternateTitle ""}}
+    Title: {{$data.GetAlternateTitle}}{{ end }}
+{{- if ne $data.GetTranslatedTitle ""}}
+    Title: {{$data.GetTranslatedTitle}}{{ end }}
+{{- if ne $data.GetUniformTitle ""}}
+    Title: {{$data.GetUniformTitle}}{{ end }}
+{{- if ne $data.GetAbbreviatedTitle ""}}
+    Title: {{ $data.GetAbbreviatedTitle }}{{ end }}
+
+{{- if ne $data.GetAbstract ""}}
+    Abstract: {{$data.GetAbstract}}{{ end }}
+
+{{- if ne $data.GetPublicationPlace ""}}
+    Place of publication: {{$data.GetPublicationPlace}}{{ end }}
+{{- if ne $data.GetPublicationPublisher ""}}
+    Publisher: {{$data.GetPublicationPublisher}}{{ end }}
+{{- if ne $data.GetPublicationDate ""}}
+    Publication date: {{$data.GetPublicationDate}}{{ end }}
+{{- if ne $data.GetManufacturePlace ""}}
+    Place of manufacture: {{$data.GetManufacturePlace}}{{ end }}
+{{- if ne $data.GetManufacturePublisher ""}}
+    Manufacturer: {{$data.GetManufacturePublisher}}{{ end }}
+{{- if ne $data.GetManufactureDate ""}}
+    Manufacture date: {{$data.GetManufactureDate}}{{ end }}
+{{- if ne $data.GetDistributionPlace ""}}
+    Place of distribution: {{$data.GetDistributionPlace}}{{ end }}
+{{- if ne $data.GetDistributionPublisher ""}}
+    Distributor: {{$data.GetDistributionPublisher}}{{ end }}
+{{- if ne $data.GetDistributionDate ""}}
+    Distribution date: {{$data.GetDistributionDate}}{{ end }}
+{{- if ne $data.GetProductionPlace ""}}
+    Place of production: {{$data.GetProductionPlace}}{{ end }}
+{{- if ne $data.GetProductionPublisher ""}}
+    Producer: {{$data.GetProductionPublisher}}{{ end }}
+{{- if ne $data.GetProductionDate ""}}
+    Production date: {{$data.GetProductionDate}}{{ end }}
+
+{{- if ne $data.GetDoi ""}}
+    Identifier DOI: {{ $data.GetDoi }}{{ end }}
+{{- if ne $data.GetIsbn ""}}
+    Identifier ISBN: {{ $data.GetIsbn }}{{ end }}
+{{- if ne $data.GetIsbnInvalid ""}}
+    Identifier ISBN: {{ $data.GetIsbnInvalid }}{{ end }}
+{{- if ne $data.GetIssn ""}}
+    Identifier ISSN: {{ $data.GetIssn }}{{ end }}
+{{- if ne $data.GetIssnInvalid ""}}
+    Identifier ISSN: {{ $data.GetIssnInvalid }}{{ end }}
+{{- if ne $data.GetIssnl ""}}
+    Identifier ISSN-L: {{ $data.GetIssnl }}{{ end }}
+{{- if ne $data.GetIsmn ""}}
+    Identifier ISMN: {{ $data.GetIsmn }}{{ end }}
+{{- if ne $data.GetIssueNumber ""}}
+    Identifier Issue Number: {{ $data.GetIssueNumber }}{{ end }}
+{{- if ne $data.GetMatrixNumber ""}}
+    Identifier Matrix Number: {{ $data.GetMatrixNumber }}{{ end }}
+{{- if ne $data.GetMusicPlate ""}}
+    Identifier Plate Number: {{ $data.GetMusicPlate }}{{ end }}
+{{- if ne $data.GetMusicPublisher ""}}
+    Identifier Music Publisher Number: {{ $data.GetMusicPublisher }}{{ end }}
+{{- if ne $data.GetUrn ""}}
+    Identifier URN: {{ $data.GetUrn }}{{ end }}
+{{- if ne $data.GetVideoRecordingIdentifier ""}}
+    Identifier Video Recording Publisher Number: {{ $data.GetVideoRecordingIdentifier }}{{ end }}
+
+
+{{/* Available at: Bib, CallNo und URL */}}
+
+Resource type: {{$data.GetResourceType}}
+
+
+---
+{{- range $type, $persons := $data.GetPersons }}
+        {{- range $person := $persons }}
+            {{ $type }}: {{ $person.Name }}{{if ne $person.Date ""}} ({{ $person.Date }}){{ end }}{{if ne $person.AlternateNames "" }} ; Alternate names: {{ $person.AlternateNames }}{{ end }}
+        {{- end }}
+{{- end }}
+
+{{- range $type, $families := $data.GetFamilies }}
+    {{- range $family := $families }}
+        {{ $type }}: {{ $family.Name }}{{if ne $family.Date "" }} ({{ $family.Date }}){{ end }}{{if ne $family.AlternateNames "" }} ; Alternate names: {{ $family.AlternateNames }}{{ end }}
+    {{- end }}
+{{- end }}
+
+{{- range $type, $corporates := $data.GetCorporates }}
+    {{- range $corporate := $corporates }}
+        {{ $type }}: {{ $corporate.Name }}{{if ne $corporate.Description "" }} ({{ $corporate.Description }}){{ end }}{{if ne $corporate.AlternateNames "" }} ; Alternate names: {{ $corporate.AlternateNames }}{{ end }}
+    {{- end }}
+{{- end }}
+
+{{- range $type, $conferences := $data.GetConferences }}
+    {{- range $conference := $conferences }}
+        {{ $type }}: {{ $conference.Name }}{{if ne $conference.Date "" }}, {{ $conference.Date }}{{ end }}{{if ne $conference.Description "" }} ({{ $conference.Description }}){{ end }}{{if ne $conference.AlternateNames "" }} ; Alternate names: {{ $conference.AlternateNames }}{{ end }}
+    {{- end }}
+{{- end }}
+---
+
+{{- range $person := $data.GetSubjectPersons }}
+    About person: {{ $person.Name }}{{if ne $person.Date "" }} ({{ $person.Date }}){{ end }}{{if ne $person.AlternateNames "" }} ; Alternate names: {{ $person.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $family := $data.GetSubjectFamilies }}
+    About family: {{ $family.Name }}{{if ne $family.Date "" }} ({{ $family.Date }}){{ end }}{{if ne $family.AlternateNames "" }} ; Alternate names: {{ $family.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $corporate := $data.GetSubjectCorporates }}
+    About organisation: {{ $corporate.Name }}{{if ne $corporate.Description "" }} ({{ $corporate.Description }}){{ end }}{{if ne $corporate.AlternateNames "" }} ; Alternate names: {{ $corporate.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $conference := $data.GetSubjectConferences }}
+    About event: {{ $conference.Name }}{{if ne $conference.Date "" }}, {{ $conference.Date }}{{ end }}{{if ne $conference.Description "" }} ({{ $conference.Description }}){{ end }}{{if ne $conference.AlternateNames "" }} ; Alternate names: {{ $conference.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $topic := $data.GetSubjectTopics }}
+    About topic: {{ $topic.Name }}{{if ne $topic.AlternateNames "" }} ; Alternate names: {{ $topic.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $place := $data.GetSubjectGeographics }}
+    About place: {{ $place.Name }}{{if ne $place.Description "" }} ({{ $place.Description }}){{ end }}{{if ne $place.AlternateNames "" }} ; Alternate names: {{ $place.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- range $title := $data.GetSubjectTitles }}
+    About title: {{ $title.Title }}{{if ne $title.Name "" }} by {{ $title.Name }}){{ end }}{{if ne $title.AlternateNames "" }} ; Alternate names: {{ $title.AlternateNames }}{{ end }}
+{{- end }}
+
+{{- if ne $data.GetDdc ""}}About: {{ $data.GetDdc }}{{ end }}
+{{- if ne $data.GetRvk ""}}About: {{ $data.GetRvk }}{{ end }}
+{{- if ne $data.GetUdc "" }}About: {{ $data.GetUdc }}{{ end }}
+
+{{- if ne $data.GetGenre ""}}Genre: {{ $data.GetGenre }}{{ end }}
+
+{{/*
+---
+additional information:
+notes
+*/}}

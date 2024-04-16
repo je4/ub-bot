@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 )
 
@@ -220,102 +221,119 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 			},
 		},
 	}
+	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		// get the search query from the user
 		data := i.ApplicationCommandData()
 		cat.logger.Debug().Msgf("command name: %s", data.Name)
-		var sType, query string
-		var magic bool
-		for _, opt := range data.Options {
-			switch opt.Name {
-			case "querytype":
-				sType = opt.StringValue()
-			case "query":
-				query = opt.StringValue()
-			case "magic":
-				magic = opt.BoolValue()
-			}
-		}
-		if sType == "" || query == "" {
-			if err := i.SendInteractionResponseMessage("Please provide search type and query"); err != nil {
+
+		if m.TryLock() == false {
+			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
+		go func() {
+			defer m.Unlock()
 
-		var newQuery = query
-		if magic {
-			var err error
-			cat.logger.Debug().Msgf("magic query: %s", query)
-			newQuery, err = cat.Query2Embedding(query)
-			if err != nil {
-				cat.logger.Error().Msgf("Error converting query: %v", err)
-				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error converting query: %v", err)); err != nil {
+			var sType, query string
+			var magic bool
+			for _, opt := range data.Options {
+				switch opt.Name {
+				case "querytype":
+					sType = opt.StringValue()
+				case "query":
+					query = opt.StringValue()
+				case "magic":
+					magic = opt.BoolValue()
+				}
+			}
+			if sType == "" || query == "" {
+				if err := i.SendInteractionResponseMessage("Please provide search type and query"); err != nil {
 					cat.logger.Error().Msgf("Error sending response: %v", err)
 				}
 				return
 			}
-			cat.logger.Debug().Msgf("new query: %s", newQuery)
-		}
 
-		var searchType SearchType
-		var embedding []float32
-		var err error
-		switch sType {
-		case "marc":
-			embedding, err = cat.GetEmbedding(newQuery)
-			searchType = SearchTypeEmbeddingMARC
-		case "prose":
-			embedding, err = cat.GetEmbedding(newQuery)
-			searchType = SearchTypeEmbeddingProse
-		case "json":
-			embedding, err = cat.GetEmbedding(newQuery)
-			searchType = SearchTypeEmbeddingJSON
-		case "simple":
-			searchType = SearchTypeSimple
-		default:
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Unknown search type %s", sType)); err != nil {
+			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Searching for %s: %s", sType, query)); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
-			return
-		}
-		if err != nil {
-			cat.logger.Error().Msgf("Error getting embedding: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error getting embedding: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
-			}
-			return
-		}
 
-		stat := cat.status.Get(i.ChannelID)
-		result, err := cat.Search(newQuery, embedding, searchType, 0, stat.config.maxResults)
-		if err != nil {
-			cat.logger.Error().Msgf("Error searching: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
+			var newQuery = query
+			if magic {
+				var err error
+				cat.logger.Debug().Msgf("magic query: %s", query)
+				newQuery, err = cat.Query2Embedding(query)
+				if err != nil {
+					cat.logger.Error().Msgf("Error converting query: %v", err)
+					if err := i.SendChannelMessage(fmt.Sprintf("Error converting query: %v", err)); err != nil {
+						cat.logger.Error().Msgf("Error sending response: %v", err)
+					}
+					return
+				}
+				cat.logger.Debug().Msgf("new query: %s", newQuery)
 			}
-			return
-		}
-		stat.result = []*schema.UBSchema{}
-		stat.lastQuery = newQuery
-		stat.lastSearchType = searchType
-		stat.lastVector = embedding
 
-		embeds, err := cat.Result2MessageEmbed(result, stat)
-		if err != nil {
-			cat.logger.Error().Msgf("Error creating response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
+			var searchType SearchType
+			var embedding []float32
+			var err error
+			switch sType {
+			case "marc":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingMARC
+			case "prose":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingProse
+			case "json":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingJSON
+			case "simple":
+				searchType = SearchTypeSimple
+			default:
+				if err := i.SendChannelMessage(fmt.Sprintf("Unknown search type %s", sType)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
 			}
-			return
-		}
-		if err := i.SendInteractionResponseEmbeds(embeds); err != nil {
-			cat.logger.Error().Msgf("Error sending response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting embedding: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error getting embedding: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
 			}
-			return
-		}
+
+			stat := cat.status.Get(i.ChannelID)
+			result, err := cat.Search(newQuery, embedding, searchType, 0, stat.config.maxResults)
+			if err != nil {
+				cat.logger.Error().Msgf("Error searching: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			stat.result = []*schema.UBSchema{}
+			stat.lastQuery = newQuery
+			stat.lastSearchType = searchType
+			stat.lastVector = embedding
+
+			embeds, err := cat.Result2MessageEmbed(result, stat)
+			if err != nil {
+				cat.logger.Error().Msgf("Error creating response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			cat.logger.Info().Msgf("sending %d embeds", len(embeds))
+			if err := i.SendChannelEmbeds(embeds); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+		}()
 	}
 	return
 }
@@ -353,6 +371,7 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 			},
 		},
 	}
+	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		data := i.ApplicationCommandData()
 		if len(data.Options) < 2 {
@@ -414,6 +433,7 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 
 			cat.logger.Debug().Msgf("result ID: %s", resultIDStr)
 		}
+
 		if lastResult == nil {
 			cat.logger.Error().Msgf("No last result available")
 			if err := i.SendInteractionResponseMessage("No last result available"); err != nil {
@@ -442,31 +462,44 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 		stat.lastSearchType = searchType
 		stat.lastVector = vector
 
-		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
-		result, err := cat.Search("", vector, searchType, 0, stat.config.maxResults)
-		if err != nil {
-			cat.logger.Error().Msgf("Error searching: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
-			}
-			return
-		}
-
-		embeds, err := cat.Result2MessageEmbed(result, stat)
-		if err != nil {
-			cat.logger.Error().Msgf("Error creating response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
-			}
-			return
-		}
-		if err := i.SendInteractionResponseEmbeds(embeds); err != nil {
+		if err := i.SendInteractionResponseMessage(fmt.Sprintf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())); err != nil {
 			cat.logger.Error().Msgf("Error sending response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
+		}
+		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
+		if m.TryLock() == false {
+			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
+		go func() {
+			defer m.Unlock()
+
+			result, err := cat.Search("", vector, searchType, 0, stat.config.maxResults)
+			if err != nil {
+				cat.logger.Error().Msgf("Error searching: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+
+			embeds, err := cat.Result2MessageEmbed(result, stat)
+			if err != nil {
+				cat.logger.Error().Msgf("Error creating response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if err := i.SendChannelEmbeds(embeds); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+		}()
 	}
 	return
 }
@@ -484,6 +517,7 @@ func (cat *Catalog) CommandMagic() (cmdFunc discord.CommandCreate, appCmd *disco
 			},
 		},
 	}
+	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		data := i.ApplicationCommandData()
 		cat.logger.Debug().Msgf("command name: %s", data.Name)
@@ -495,18 +529,27 @@ func (cat *Catalog) CommandMagic() (cmdFunc discord.CommandCreate, appCmd *disco
 		}
 		query := data.Options[0].StringValue()
 		cat.logger.Debug().Msgf("magic query: %s", query)
-		newQuery, err := cat.Query2Embedding(query)
-		if err != nil {
-			cat.logger.Error().Msgf("Error converting query: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error converting query: %v", err)); err != nil {
+		if m.TryLock() == false {
+			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
-		cat.logger.Debug().Msgf("new query: %s", newQuery)
-		if err := i.SendInteractionResponseMessage(newQuery); err != nil {
-			cat.logger.Error().Msgf("Error sending response: %v", err)
-		}
+		go func() {
+			defer m.Unlock()
+			newQuery, err := cat.Query2Embedding(query)
+			if err != nil {
+				cat.logger.Error().Msgf("Error converting query: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error converting query: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			cat.logger.Debug().Msgf("new query: %s", newQuery)
+			if err := i.SendChannelMessage(newQuery); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+		}()
 	}
 	return
 }
@@ -612,6 +655,7 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 		Description: "use last search and get next result page",
 		Options:     []*discordgo.ApplicationCommandOption{},
 	}
+	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		stat := cat.status.Get(i.ChannelID)
 		if len(stat.result) == 0 || stat.lastQuery == "" {
@@ -620,41 +664,61 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 			}
 			return
 		}
-		var searchType SearchType
-		var vector []float32
+		if m.TryLock() == false {
+			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+		go func() {
+			defer m.Unlock()
 
-		var result *index.Result
-		var sErr error
-		if strings.HasPrefix(stat.lastQuery, "similar:") {
-			cat.logger.Debug().Msgf("searching %s similarities for: %s", stat.lastSearchType, stat.lastQuery)
-			result, sErr = cat.Search("", vector, searchType, int64(len(stat.result)), stat.config.maxResults)
-		} else {
-			cat.logger.Debug().Msgf("searching for: %s", stat.lastQuery)
-			result, sErr = cat.Search(stat.lastQuery, stat.lastVector, stat.lastSearchType, int64(len(stat.result)), stat.config.maxResults)
-		}
-		if sErr != nil {
-			cat.logger.Error().Msgf("Error searching: %v", sErr)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error searching: %v", sErr)); err != nil {
+			if err := i.SendInteractionResponseMessage("Searching for more results"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
-			return
-		}
 
-		embeds, err := cat.Result2MessageEmbed(result, stat)
-		if err != nil {
-			cat.logger.Error().Msgf("Error creating response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
+			var searchType SearchType
+			var vector []float32
+
+			var result *index.Result
+			var sErr error
+			if strings.HasPrefix(stat.lastQuery, "similar:") {
+				cat.logger.Debug().Msgf("searching %s similarities for: %s", stat.lastSearchType, stat.lastQuery)
+				result, sErr = cat.Search("", vector, searchType, int64(len(stat.result)), stat.config.maxResults)
+			} else {
+				cat.logger.Debug().Msgf("searching for: %s", stat.lastQuery)
+				result, sErr = cat.Search(stat.lastQuery, stat.lastVector, stat.lastSearchType, int64(len(stat.result)), stat.config.maxResults)
 			}
-			return
-		}
-		if err := i.SendInteractionResponseEmbeds(embeds); err != nil {
-			cat.logger.Error().Msgf("Error sending response: %v", err)
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
-				cat.logger.Error().Msgf("Error sending response: %v", err)
+			if sErr != nil {
+				cat.logger.Error().Msgf("Error searching: %v", sErr)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", sErr)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
 			}
-			return
-		}
+
+			embeds, err := cat.Result2MessageEmbed(result, stat)
+			if err != nil {
+				cat.logger.Error().Msgf("Error creating response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if stat.result == nil {
+				stat.result = []*schema.UBSchema{}
+			}
+			for _, entry := range result.Docs {
+				stat.result = append(stat.result, entry)
+			}
+			if err := i.SendChannelEmbeds(embeds); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+		}()
 	}
 	return
 }
@@ -701,12 +765,10 @@ func (cat *Catalog) InitCommands(session *discord.Session) error {
 	var cmdFunc discord.CommandCreate
 	var appCmd *discordgo.ApplicationCommand
 
-	/*
-		cmdFunc, appCmd := cat.CommandResultSize()
-		if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
-			return errors.Wrap(err, "cannot create resultsize command")
-		}
-	*/
+	cmdFunc, appCmd = cat.CommandResultSize()
+	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
+		return errors.Wrap(err, "cannot create resultsize command")
+	}
 
 	cmdFunc, appCmd = cat.CommandMagic()
 	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {

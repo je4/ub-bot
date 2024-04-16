@@ -44,3 +44,19 @@ func (i *Interaction) SendInteractionResponseEmbeds(embeds []*discordgo.MessageE
 	}
 	return nil
 }
+
+func (i *Interaction) SendChannelEmbeds(embeds []*discordgo.MessageEmbed) error {
+	for _, embed := range embeds {
+		if _, err := i.session.ChannelMessageSendEmbed(i.ChannelID, embed); err != nil {
+			return errors.Wrap(err, "cannot send channel embeds")
+		}
+	}
+	return nil
+}
+
+func (i *Interaction) SendChannelMessage(msg string) error {
+	if _, err := i.session.ChannelMessageSend(i.ChannelID, msg); err != nil {
+		return errors.Wrap(err, "cannot send channel message")
+	}
+	return nil
+}

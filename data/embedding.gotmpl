@@ -13,6 +13,13 @@ Title: {{ $data.GetMainTitle }}
 
 {{- if ne $data.GetAbstract ""}}
     Abstract: {{$data.GetAbstract}}{{ end }}
+{{- if ne $data.GetTableOfContents ""}}
+    Table of Contents: {{$data.GetTableOfContents}} {{ end }}
+
+{{- if ne $data.GetSeriesTitle ""}}
+    Part of series: {{$data.GetSeriesTitle}} {{ end }}
+{{- if ne $data.GetHostTitle ""}}
+    Contained in: {{$data.GetHostTitle}} {{ end }}
 
 {{- if ne $data.GetPublicationPlace ""}}
     Place of publication: {{$data.GetPublicationPlace}}{{ end }}
@@ -65,18 +72,13 @@ Title: {{ $data.GetMainTitle }}
     Identifier URN: {{ $data.GetUrn }}{{ end }}
 {{- if ne $data.GetVideoRecordingIdentifier ""}}
     Identifier Video Recording Publisher Number: {{ $data.GetVideoRecordingIdentifier }}{{ end }}
-
-
 {{/* Available at: Bib, CallNo und URL */}}
-
 Resource type: {{$data.GetResourceType}}
-
-
 ---
 {{- range $type, $persons := $data.GetPersons }}
-        {{- range $person := $persons }}
-            {{ $type }}: {{ $person.Name }}{{if ne $person.Date ""}} ({{ $person.Date }}){{ end }}{{if ne $person.AlternateNames "" }} ; Alternate names: {{ $person.AlternateNames }}{{ end }}
-        {{- end }}
+    {{- range $person := $persons }}
+        {{ $type }}: {{ $person.Name }}{{if ne $person.Date ""}} ({{ $person.Date }}){{ end }}{{if ne $person.AlternateNames "" }} ; Alternate names: {{ $person.AlternateNames }}{{ end }}
+    {{- end }}
 {{- end }}
 
 {{- range $type, $families := $data.GetFamilies }}
@@ -126,14 +128,24 @@ Resource type: {{$data.GetResourceType}}
     About title: {{ $title.Title }}{{if ne $title.Name "" }} by {{ $title.Name }}){{ end }}{{if ne $title.AlternateNames "" }} ; Alternate names: {{ $title.AlternateNames }}{{ end }}
 {{- end }}
 
-{{- if ne $data.GetDdc ""}}About: {{ $data.GetDdc }}{{ end }}
-{{- if ne $data.GetRvk ""}}About: {{ $data.GetRvk }}{{ end }}
-{{- if ne $data.GetUdc "" }}About: {{ $data.GetUdc }}{{ end }}
+{{- if ne $data.GetDdc ""}}
+    About: {{ $data.GetDdc }}{{ end }}
+{{- if ne $data.GetRvk ""}}
+    About: {{ $data.GetRvk }}{{ end }}
+{{- if ne $data.GetUdc "" }}
+    About: {{ $data.GetUdc }}{{ end }}
 
-{{- if ne $data.GetGenre ""}}Genre: {{ $data.GetGenre }}{{ end }}
-
-{{/*
+{{- if ne $data.GetGenre ""}}
+    Genre: {{ $data.GetGenre }}{{ end }}
 ---
-additional information:
-notes
-*/}}
+
+{{- if ne $data.GetGeneralNote ""}}
+    Note: {{ $data.GetGeneralNote }}{{ end }}
+{{- if ne $data.GetCreditsNote ""}}
+    Credits: {{ $data.GetCreditsNote }}{{ end }}
+{{- if ne $data.GetPerformersNote ""}}
+    Performers: {{ $data.GetPerformersNote }}{{ end }}
+{{- if ne $data.GetStatementOfResponsibility ""}}
+    Statement of responsibility: {{ $data.GetStatementOfResponsibility }}{{ end }}
+{{- if ne $data.GetMediumOfPerformance ""}}
+    Medium of performance: {{ $data.GetMediumOfPerformance }}{{ end }}

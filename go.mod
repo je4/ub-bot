@@ -8,12 +8,11 @@ require (
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/elastic/elastic-transport-go/v8 v8.5.0
 	github.com/elastic/go-elasticsearch/v8 v8.13.1
-	github.com/je4/ubcat/v2 v2.0.8
+	github.com/je4/ubcat/v2 v2.0.9
 	github.com/je4/utils/v2 v2.0.33
 	github.com/rs/zerolog v1.32.0
 	github.com/sashabaranov/go-openai v1.22.0
 	go.elastic.co/apm/module/apmelasticsearch v1.15.0
-	golang.org/x/exp v0.0.0-20240404231335-c0f41cb1a7a0
 )
 
 require (
@@ -36,7 +35,6 @@ require (
 	github.com/google/flatbuffers v24.3.25+incompatible // indirect
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/jcchavezs/porto v0.6.0 // indirect
-	github.com/joeshaw/multierror v0.0.0-20140124173710-69b34d4ec901 // indirect
 	github.com/klauspost/compress v1.17.8 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

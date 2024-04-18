@@ -16,6 +16,7 @@ import (
 	"github.com/je4/utils/v2/pkg/zLogger"
 	oai "github.com/sashabaranov/go-openai"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +81,7 @@ func (cat *Catalog) GetDocuments(identifier ...string) (map[string]*schema.UBSch
 	return cat.ubClient.GetDocuments(context.Background(), identifier...)
 }
 
-func (cat *Catalog) Search(queryString string, embedding []float32, searchType SearchType, from, num int64) (*index.Result, error) {
+func (cat *Catalog) Search(queryString string, filter map[string]string, embedding []float32, searchType SearchType, from, num int64) (*index.Result, error) {
 	var vectorMarc, vectorProse, vectorJSON []float32
 	if searchType != SearchTypeSimple {
 		if embedding == nil {
@@ -97,13 +98,13 @@ func (cat *Catalog) Search(queryString string, embedding []float32, searchType S
 			return nil, errors.Errorf("unknown search type %v", searchType)
 		}
 	}
-	res, err := cat.ubClient.Search(context.Background(), queryString, vectorMarc, vectorJSON, vectorProse, from, num)
+	res, err := cat.ubClient.Search(context.Background(), queryString, filter, vectorMarc, vectorJSON, vectorProse, from, num)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot search")
 	}
 	return res, nil
 }
-func (cat *Catalog) SearchKNN(embedding []float32, searchType SearchType, k int64, numCandidates int64) (*index.Result, error) {
+func (cat *Catalog) SearchKNN(filter map[string]string, embedding []float32, searchType SearchType, k int64, numCandidates int64) (*index.Result, error) {
 	var field string
 	if embedding == nil {
 		return nil, errors.Errorf("embedding is nil")
@@ -118,7 +119,7 @@ func (cat *Catalog) SearchKNN(embedding []float32, searchType SearchType, k int6
 	default:
 		return nil, errors.Errorf("unknown search type %v", searchType)
 	}
-	res, err := cat.ubClient.SearchKNN(context.Background(), embedding, field, k, numCandidates)
+	res, err := cat.ubClient.SearchKNN(context.Background(), filter, embedding, field, k, numCandidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot search")
 	}
@@ -199,6 +200,8 @@ func (cat *Catalog) Result2MessageEmbed(result *index.Result, stat *channelStatu
 	return embeds, nil
 }
 
+var channelFilter = regexp.MustCompile(`^filter-([^-]+)-(.+)$`)
+
 func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *discordgo.ApplicationCommand) {
 	appCmd = &discordgo.ApplicationCommand{
 		Name:        cat.prefix + "search",
@@ -276,7 +279,27 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 				return
 			}
 
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Searching for %s: %s", sType, query)); err != nil {
+			filter := map[string]string{}
+			session := i.GetSession()
+			channel, err := session.State.Channel(i.ChannelID)
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting channel: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error getting channel: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			filterMatch := channelFilter.FindStringSubmatch(channel.Name)
+			if filterMatch != nil && filterMatch[1] != "" && filterMatch[2] != "" {
+				filter[strings.ReplaceAll(filterMatch[1], "_", ".")] = filterMatch[2]
+			}
+
+			msg := fmt.Sprintf("Searching for %s: %s", sType, query)
+			msg += "\nFilter:\n"
+			for k, v := range filter {
+				msg += fmt.Sprintf("%s: %s*\n", k, v)
+			}
+			if err := i.SendInteractionResponseMessage(msg); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 
@@ -297,7 +320,6 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 
 			var searchType SearchType
 			var embedding []float32
-			var err error
 			switch sType {
 			case "marc":
 				embedding, err = cat.GetEmbedding(newQuery)
@@ -325,7 +347,7 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 			}
 
 			stat := cat.status.Get(i.ChannelID)
-			result, err := cat.Search(newQuery, embedding, searchType, 0, stat.config.maxResults)
+			result, err := cat.Search(newQuery, filter, embedding, searchType, 0, stat.config.maxResults)
 			if err != nil {
 				cat.logger.Error().Msgf("Error searching: %v", err)
 				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
@@ -436,7 +458,27 @@ func (cat *Catalog) CommandSearchKNN() (cmdFunc discord.CommandCreate, appCmd *d
 				return
 			}
 
-			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Searching for %s: %s", sType, query)); err != nil {
+			filter := map[string]string{}
+			session := i.GetSession()
+			channel, err := session.State.Channel(i.ChannelID)
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting channel: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error getting channel: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			filterMatch := channelFilter.FindStringSubmatch(channel.Name)
+			if filterMatch != nil && filterMatch[1] != "" && filterMatch[2] != "" {
+				filter[strings.ReplaceAll(filterMatch[1], "_", ".")] = filterMatch[2]
+			}
+
+			msg := fmt.Sprintf("Searching for %s: %s", sType, query)
+			msg += "\nFilter:\n"
+			for k, v := range filter {
+				msg += fmt.Sprintf("%s: %s*\n", k, v)
+			}
+			if err := i.SendInteractionResponseMessage(msg); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 
@@ -457,7 +499,6 @@ func (cat *Catalog) CommandSearchKNN() (cmdFunc discord.CommandCreate, appCmd *d
 
 			var searchType SearchType
 			var embedding []float32
-			var err error
 			switch sType {
 			case "marc":
 				embedding, err = cat.GetEmbedding(newQuery)
@@ -485,7 +526,7 @@ func (cat *Catalog) CommandSearchKNN() (cmdFunc discord.CommandCreate, appCmd *d
 			}
 
 			stat := cat.status.Get(i.ChannelID)
-			result, err := cat.SearchKNN(embedding, searchType, stat.config.maxResults, stat.config.maxResults)
+			result, err := cat.SearchKNN(filter, embedding, searchType, stat.config.maxResults, stat.config.maxResults)
 			if err != nil {
 				cat.logger.Error().Msgf("Error searching: %v", err)
 				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
@@ -644,7 +685,27 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 		stat.lastSearchType = searchType
 		stat.lastVector = vector
 
-		if err := i.SendInteractionResponseMessage(fmt.Sprintf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())); err != nil {
+		filter := map[string]string{}
+		session := i.GetSession()
+		channel, err := session.State.Channel(i.ChannelID)
+		if err != nil {
+			cat.logger.Error().Msgf("Error getting channel: %v", err)
+			if err := i.SendChannelMessage(fmt.Sprintf("Error getting channel: %v", err)); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+		filterMatch := channelFilter.FindStringSubmatch(channel.Name)
+		if filterMatch != nil && filterMatch[1] != "" && filterMatch[2] != "" {
+			filter[strings.ReplaceAll(filterMatch[1], "_", ".")] = filterMatch[2]
+		}
+
+		msg := fmt.Sprintf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
+		msg += "\nFilter:\n"
+		for k, v := range filter {
+			msg += fmt.Sprintf("%s: %s*\n", k, v)
+		}
+		if err := i.SendInteractionResponseMessage(msg); err != nil {
 			cat.logger.Error().Msgf("Error sending response: %v", err)
 		}
 		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
@@ -657,7 +718,7 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 		go func() {
 			defer m.Unlock()
 
-			result, err := cat.Search("", vector, searchType, 0, stat.config.maxResults)
+			result, err := cat.Search("", filter, vector, searchType, 0, stat.config.maxResults)
 			if err != nil {
 				cat.logger.Error().Msgf("Error searching: %v", err)
 				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
@@ -858,12 +919,27 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 			}
 			return
 		}
-		go func() {
-			defer m.Unlock()
-
-			if err := i.SendInteractionResponseMessage("Searching for more results"); err != nil {
+		filter := map[string]string{}
+		session := i.GetSession()
+		channel, err := session.State.Channel(i.ChannelID)
+		if err != nil {
+			cat.logger.Error().Msgf("Error getting channel: %v", err)
+			if err := i.SendChannelMessage(fmt.Sprintf("Error getting channel: %v", err)); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
+			return
+		}
+		filterMatch := channelFilter.FindStringSubmatch(channel.Name)
+		if filterMatch != nil && filterMatch[1] != "" && filterMatch[2] != "" {
+			filter[strings.ReplaceAll(filterMatch[1], "_", ".")] = filterMatch[2]
+		}
+
+		if err := i.SendInteractionResponseMessage("Searching for more results"); err != nil {
+			cat.logger.Error().Msgf("Error sending response: %v", err)
+		}
+
+		go func() {
+			defer m.Unlock()
 
 			var searchType SearchType
 			var vector []float32
@@ -872,10 +948,10 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 			var sErr error
 			if strings.HasPrefix(stat.lastQuery, "similar:") {
 				cat.logger.Debug().Msgf("searching %s similarities for: %s", stat.lastSearchType, stat.lastQuery)
-				result, sErr = cat.Search("", vector, searchType, int64(len(stat.result)), stat.config.maxResults)
+				result, sErr = cat.Search("", filter, vector, searchType, int64(len(stat.result)), stat.config.maxResults)
 			} else {
 				cat.logger.Debug().Msgf("searching for: %s", stat.lastQuery)
-				result, sErr = cat.Search(stat.lastQuery, stat.lastVector, stat.lastSearchType, int64(len(stat.result)), stat.config.maxResults)
+				result, sErr = cat.Search(stat.lastQuery, filter, stat.lastVector, stat.lastSearchType, int64(len(stat.result)), stat.config.maxResults)
 			}
 			if sErr != nil {
 				cat.logger.Error().Msgf("Error searching: %v", sErr)

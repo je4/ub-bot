@@ -8,7 +8,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/elastic/elastic-transport-go/v8 v8.5.0
 	github.com/elastic/go-elasticsearch/v8 v8.13.1
-	github.com/je4/ubcat/v2 v2.0.9
+	github.com/je4/ubcat/v2 v2.0.10
 	github.com/je4/utils/v2 v2.0.33
 	github.com/rs/zerolog v1.32.0
 	github.com/sashabaranov/go-openai v1.22.0

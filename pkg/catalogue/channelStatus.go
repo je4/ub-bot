@@ -13,6 +13,7 @@ type channelStatus struct {
 	lastQuery      string
 	lastSearchType SearchType
 	lastVector     []float32
+	searchFunc     string
 }
 
 type cStatus map[string]*channelStatus

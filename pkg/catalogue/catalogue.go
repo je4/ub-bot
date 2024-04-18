@@ -103,6 +103,27 @@ func (cat *Catalog) Search(queryString string, embedding []float32, searchType S
 	}
 	return res, nil
 }
+func (cat *Catalog) SearchKNN(embedding []float32, searchType SearchType, k int64, numCandidates int64) (*index.Result, error) {
+	var field string
+	if embedding == nil {
+		return nil, errors.Errorf("embedding is nil")
+	}
+	switch searchType {
+	case SearchTypeEmbeddingMARC:
+		field = "embedding_marc"
+	case SearchTypeEmbeddingProse:
+		field = "embedding_prose"
+	case SearchTypeEmbeddingJSON:
+		field = "embedding_json"
+	default:
+		return nil, errors.Errorf("unknown search type %v", searchType)
+	}
+	res, err := cat.ubClient.SearchKNN(context.Background(), embedding, field, k, numCandidates)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot search")
+	}
+	return res, nil
+}
 
 func (cat *Catalog) Result2MessageEmbed(result *index.Result, stat *channelStatus) ([]*discordgo.MessageEmbed, error) {
 	var embeds = []*discordgo.MessageEmbed{}
@@ -316,6 +337,167 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 			stat.lastQuery = newQuery
 			stat.lastSearchType = searchType
 			stat.lastVector = embedding
+			stat.searchFunc = appCmd.Name
+
+			embeds, err := cat.Result2MessageEmbed(result, stat)
+			if err != nil {
+				cat.logger.Error().Msgf("Error creating response: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error creating response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			cat.logger.Info().Msgf("sending %d embeds", len(embeds))
+			if err := i.SendChannelEmbeds(embeds); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+				if err := i.SendInteractionResponseMessage(fmt.Sprintf("Error sending response: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+		}()
+	}
+	return
+}
+func (cat *Catalog) CommandSearchKNN() (cmdFunc discord.CommandCreate, appCmd *discordgo.ApplicationCommand) {
+	appCmd = &discordgo.ApplicationCommand{
+		Name:        cat.prefix + "searchknn",
+		Description: "Search the catalogue",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type: discordgo.ApplicationCommandOptionString,
+				Choices: []*discordgo.ApplicationCommandOptionChoice{
+					{
+						Name:  "Marc Vector",
+						Value: "marc",
+					},
+					{
+						Name:  "Prose Vector",
+						Value: "prose",
+					},
+					{
+						Name:  "JSON Vector",
+						Value: "json",
+					},
+					{
+						Name:  "Simple Elastic Query",
+						Value: "simple",
+					},
+				},
+				Name:        "querytype",
+				Description: "Query Type",
+				Required:    true,
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "query",
+				Description: "Query to ask for",
+				Required:    true,
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionBoolean,
+				Name:        "magic",
+				Description: "Ask AI for better query before searching",
+				Required:    false,
+			},
+		},
+	}
+	m := sync.Mutex{}
+	cmdFunc = func(i *discord.Interaction) {
+		// get the search query from the user
+		data := i.ApplicationCommandData()
+		cat.logger.Debug().Msgf("command name: %s", data.Name)
+
+		if m.TryLock() == false {
+			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
+		go func() {
+			defer m.Unlock()
+
+			var sType, query string
+			var magic bool
+			for _, opt := range data.Options {
+				switch opt.Name {
+				case "querytype":
+					sType = opt.StringValue()
+				case "query":
+					query = opt.StringValue()
+				case "magic":
+					magic = opt.BoolValue()
+				}
+			}
+			if sType == "" || query == "" {
+				if err := i.SendInteractionResponseMessage("Please provide search type and query"); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+
+			if err := i.SendInteractionResponseMessage(fmt.Sprintf("Searching for %s: %s", sType, query)); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+
+			var newQuery = query
+			if magic {
+				var err error
+				cat.logger.Debug().Msgf("magic query: %s", query)
+				newQuery, err = cat.Query2Embedding(query)
+				if err != nil {
+					cat.logger.Error().Msgf("Error converting query: %v", err)
+					if err := i.SendChannelMessage(fmt.Sprintf("Error converting query: %v", err)); err != nil {
+						cat.logger.Error().Msgf("Error sending response: %v", err)
+					}
+					return
+				}
+				cat.logger.Debug().Msgf("new query: %s", newQuery)
+			}
+
+			var searchType SearchType
+			var embedding []float32
+			var err error
+			switch sType {
+			case "marc":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingMARC
+			case "prose":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingProse
+			case "json":
+				embedding, err = cat.GetEmbedding(newQuery)
+				searchType = SearchTypeEmbeddingJSON
+			case "simple":
+				searchType = SearchTypeSimple
+			default:
+				if err := i.SendChannelMessage(fmt.Sprintf("Unknown search type %s", sType)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				cat.logger.Error().Msgf("Error getting embedding: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error getting embedding: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+
+			stat := cat.status.Get(i.ChannelID)
+			result, err := cat.SearchKNN(embedding, searchType, stat.config.maxResults, stat.config.maxResults)
+			if err != nil {
+				cat.logger.Error().Msgf("Error searching: %v", err)
+				if err := i.SendChannelMessage(fmt.Sprintf("Error searching: %v", err)); err != nil {
+					cat.logger.Error().Msgf("Error sending response: %v", err)
+				}
+				return
+			}
+			stat.result = []*schema.UBSchema{}
+			stat.lastQuery = newQuery
+			stat.lastSearchType = searchType
+			stat.lastVector = embedding
+			stat.searchFunc = appCmd.Name
 
 			embeds, err := cat.Result2MessageEmbed(result, stat)
 			if err != nil {
@@ -658,6 +840,12 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		stat := cat.status.Get(i.ChannelID)
+		if stat.searchFunc != cat.prefix+"search" {
+			if err := i.SendInteractionResponseMessage(fmt.Sprintf("search \"%s\" not supported", stat.searchFunc)); err != nil {
+				cat.logger.Error().Msgf("Error sending response: %v", err)
+			}
+			return
+		}
 		if len(stat.result) == 0 || stat.lastQuery == "" {
 			if err := i.SendInteractionResponseMessage("No search results available"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
@@ -776,6 +964,11 @@ func (cat *Catalog) InitCommands(session *discord.Session) error {
 	}
 
 	cmdFunc, appCmd = cat.CommandSearch()
+	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
+		return errors.Wrap(err, "cannot create search command")
+	}
+
+	cmdFunc, appCmd = cat.CommandSearchKNN()
 	if err := session.ApplicationCommandCreate(cmdFunc, appCmd); err != nil {
 		return errors.Wrap(err, "cannot create search command")
 	}

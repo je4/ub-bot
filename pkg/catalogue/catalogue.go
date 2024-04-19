@@ -41,23 +41,25 @@ func NewCatalogue(elastic *elasticsearch.TypedClient, elasticIndex string, badge
 	kvBadger := openai.NewKVBadger(badgerDB)
 	client := openai.NewClientV2(openaiApiKey, kvBadger, logger)
 	cat := &Catalog{
-		ubClient: index.NewClient(elasticIndex, elastic),
-		client:   client,
-		logger:   logger,
-		status:   cStatus{},
-		prefix:   prefix,
-		tmpl:     template.Must(template.New("embedding.gotmpl").Parse(data.TextTemplate)),
+		ubClient:     index.NewClient(elasticIndex, elastic),
+		client:       client,
+		logger:       logger,
+		status:       cStatus{},
+		prefix:       prefix,
+		tmpl:         template.Must(template.New("embedding.gotmpl").Parse(data.TextTemplate)),
+		channelMutex: map[string]*sync.Mutex{},
 	}
 	return cat
 }
 
 type Catalog struct {
-	ubClient *index.Client
-	client   *openai.ClientV2
-	logger   zLogger.ZLogger
-	status   cStatus
-	prefix   string
-	tmpl     *template.Template
+	ubClient     *index.Client
+	client       *openai.ClientV2
+	logger       zLogger.ZLogger
+	status       cStatus
+	prefix       string
+	tmpl         *template.Template
+	channelMutex map[string]*sync.Mutex
 }
 
 var channelFilter = regexp.MustCompile(`^filter-([^-]+)-(.+)$`)
@@ -86,15 +88,28 @@ func FilterFromChannelTopic(topic string) map[string]string {
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("error occurred: %v\n", err)
 	}
-	for _, line := range strings.Split(topic, "\n") {
-		if strings.HasPrefix(line, "filter-") {
-			filterMatch := channelFilter.FindStringSubmatch(line)
-			if filterMatch != nil && filterMatch[1] != "" && filterMatch[2] != "" {
-				filter[strings.ReplaceAll(filterMatch[1], "_", ".")] = filterMatch[2]
-			}
-		}
-	}
 	return filter
+}
+
+func (cat *Catalog) tryLock(channelID string) bool {
+	if _, ok := cat.channelMutex[channelID]; !ok {
+		cat.channelMutex[channelID] = &sync.Mutex{}
+	}
+	return cat.channelMutex[channelID].TryLock()
+}
+
+func (cat *Catalog) lock(channelID string) {
+	if _, ok := cat.channelMutex[channelID]; !ok {
+		cat.channelMutex[channelID] = &sync.Mutex{}
+	}
+	cat.channelMutex[channelID].Lock()
+}
+
+func (cat *Catalog) unlock(channelID string) {
+	if _, ok := cat.channelMutex[channelID]; !ok {
+		return
+	}
+	cat.channelMutex[channelID].Unlock()
 }
 
 func (cat *Catalog) GetEmbedding(queryString string) (embedding []float32, resultErr error) {
@@ -292,20 +307,19 @@ func (cat *Catalog) CommandSearch() (cmdFunc discord.CommandCreate, appCmd *disc
 			},
 		},
 	}
-	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		// get the search query from the user
 		data := i.ApplicationCommandData()
 		cat.logger.Debug().Msgf("command name: %s", data.Name)
 
-		if m.TryLock() == false {
+		if cat.tryLock(i.ChannelID) == false {
 			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
 		go func() {
-			defer m.Unlock()
+			defer cat.unlock(i.ChannelID)
 
 			var sType, query string
 			var magic bool
@@ -467,20 +481,19 @@ func (cat *Catalog) CommandSearchKNN() (cmdFunc discord.CommandCreate, appCmd *d
 			},
 		},
 	}
-	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		// get the search query from the user
 		data := i.ApplicationCommandData()
 		cat.logger.Debug().Msgf("command name: %s", data.Name)
 
-		if m.TryLock() == false {
+		if cat.tryLock(i.ChannelID) == false {
 			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
 		go func() {
-			defer m.Unlock()
+			defer cat.unlock(i.ChannelID)
 
 			var sType, query string
 			var magic bool
@@ -633,7 +646,6 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 			},
 		},
 	}
-	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		data := i.ApplicationCommandData()
 		if len(data.Options) < 2 {
@@ -744,14 +756,14 @@ func (cat *Catalog) CommandSimilar() (cmdFunc discord.CommandCreate, appCmd *dis
 			cat.logger.Error().Msgf("Error sending response: %v", err)
 		}
 		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
-		if m.TryLock() == false {
+		if cat.tryLock(i.ChannelID) == false {
 			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
 		go func() {
-			defer m.Unlock()
+			defer cat.unlock(i.ChannelID)
 
 			result, err := cat.Search("", filter, vector, searchType, 0, stat.config.maxResults)
 			if err != nil {
@@ -814,7 +826,6 @@ func (cat *Catalog) CommandSimilarKNN() (cmdFunc discord.CommandCreate, appCmd *
 			},
 		},
 	}
-	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		data := i.ApplicationCommandData()
 		if len(data.Options) < 2 {
@@ -925,14 +936,14 @@ func (cat *Catalog) CommandSimilarKNN() (cmdFunc discord.CommandCreate, appCmd *
 			cat.logger.Error().Msgf("Error sending response: %v", err)
 		}
 		cat.logger.Debug().Msgf("searching %s similarities for: %s", sType, lastResult.GetMainTitle())
-		if m.TryLock() == false {
+		if cat.tryLock(i.ChannelID) == false {
 			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
 			return
 		}
 		go func() {
-			defer m.Unlock()
+			defer cat.unlock(i.ChannelID)
 
 			result, err := cat.SearchKNN(filter, vector, searchType, stat.config.maxResults, stat.config.maxResults)
 			if err != nil {
@@ -1114,7 +1125,6 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 		Description: "use last search and get next result page",
 		Options:     []*discordgo.ApplicationCommandOption{},
 	}
-	m := sync.Mutex{}
 	cmdFunc = func(i *discord.Interaction) {
 		stat := cat.status.Get(i.ChannelID)
 		if stat.searchFunc != cat.prefix+"search" {
@@ -1129,7 +1139,7 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 			}
 			return
 		}
-		if m.TryLock() == false {
+		if cat.tryLock(i.ChannelID) == false {
 			if err := i.SendInteractionResponseMessage("Please wait for the previous search to finish"); err != nil {
 				cat.logger.Error().Msgf("Error sending response: %v", err)
 			}
@@ -1151,7 +1161,7 @@ func (cat *Catalog) CommandMore() (cmdFunc discord.CommandCreate, appCmd *discor
 		}
 
 		go func() {
-			defer m.Unlock()
+			defer cat.unlock(i.ChannelID)
 
 			var searchType SearchType
 			var vector []float32
